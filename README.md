@@ -9,24 +9,24 @@ Follow the instructions present at https://github.com/raosudha89/GYAFC-corpus to
 
 ## Training 
 ### Baselines
-To train a sequence to sequence huggingface model on the given domain of the data set (E&R or F&M), <br><br>
+To train a sequence to sequence huggingface model on the given domain of the data set (E&R or F&M), <br>
 `python train.py --data <path-to-data-dir> --model <huggingface-model>`
 
 ### RL based reward
 To train a sequence to sequence huggingface model on the given domain of the data set (E&R or F&M), using the following reward functions
 * BLEU
 * BLEURT
-* Style Classifier score <br><br>
+* Style Classifier score <br>
 `python train.py --data <path-to-data-dir> --model <huggingface-model> --bleu --bleurt --classifier --classifier_model <huggingface-model>`
 
 The style classifier notebook present in the Notebooks directory can be used to train a custom distilbert based formality classifier.
 
 ### Inverse Reinforcement learning 
-When using multiple RL based rewards using the above script, equal weights are applied to each reward. To learn the optimal weights for each reward weights, Inverse reinforcement leraning is used. The below script finetunes the given huggingface model, using all the above mentioned rewards.
+When using multiple RL based rewards using the above script, equal weights are applied to each reward. To learn the optimal weights for each reward weights, Inverse reinforcement leraning is used. The below script finetunes the given huggingface model, using all the above mentioned rewards.<br>
 `python train_irl.py --dataset <path-to-data-dir> --model <huggingface-model> --classifier_model <huggingface-model>`
 
 ## Evaluation
-The model can be evaluated on all the reward metrics it was trained on using,<br><br>
+The model can be evaluated on all the reward metrics it was trained on using,<br>
 `python eval.py --dataset <path-to-data-dir> --model <huggingface-model> --classifier_model <huggingface-model>`
 
 ## Huggingface Hub

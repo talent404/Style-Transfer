@@ -22,10 +22,11 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="Huggingface model to be used", required=True)
-parser.add_argument("--domain", help="E&R or F&M Domain to train on", required=True)
-parser.add_argument("--bleu", help="Finetune with BLEU reward")
-parser.add_argument("--bleurt", help="Finetune with BLEURT reward")
-parser.add_argument("--classifier", help="Finetune with style classifier reward")
+parser.add_argument("--data", help="Path to E&R or F&M datasets", required=True)
+parser.add_argument("--bleu", help="Finetune with BLEU reward", default=False, action='store_true')
+parser.add_argument("--bleurt", help="Finetune with BLEURT reward", default=False, action='store_true')
+parser.add_argument("--classifier", help="Finetune with style classifier reward", default=False, action='store_true')
+parser.add_argument("--classifier_model", help="path to pretrained classifier model")
 
 
 args = parser.parse_args()
@@ -34,8 +35,8 @@ args = parser.parse_args()
 max_length = 30
 bleurt = evaluate.load('bleurt', module_type="metric", checkpoint='bleurt-tiny-128')
 metric_bleu = evaluate.load('bleu')
-clf = AutoModelForSequenceClassification.from_pretrained('style-classifier/checkpoint-1000', num_labels=2)
-clf_tok = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+clf = AutoModelForSequenceClassification.from_pretrained(args.classifier_model, num_labels=2)
+clf_tok = AutoTokenizer.from_pretrained(args.classifier_model)
 smooth = SmoothingFunction()
 nltk.download('punkt')
 
@@ -88,6 +89,7 @@ def postprocess(predictions, labels):
 
 
 def rl_loss(probs, reward):
+    # Computing the policy gradient
     reward = reward.unsqueeze(1)
     sampled_logprobs = torch.log(probs)
     r_loss = -sampled_logprobs*reward
@@ -96,6 +98,8 @@ def rl_loss(probs, reward):
 
 def bleurt_loss(batch):
     labels = batch['labels']
+    
+    # Sampling from policy
     sampled_outputs = model.generate(
           input_ids=batch['input_ids'],
           attention_mask=batch['attention_mask'],
@@ -106,6 +110,8 @@ def bleurt_loss(batch):
           max_length=30,  
           top_k=tokenizer.vocab_size
         )
+    
+    # Greedy decoding for baseline
     greedy_outputs = model.generate(
           input_ids=batch['input_ids'],
           attention_mask=batch['attention_mask'],
@@ -116,6 +122,7 @@ def bleurt_loss(batch):
           return_dict_in_generate=True,
         )
     
+    # Obtaining the probabilities of sampled tokens
     out = [i for i in sampled_outputs.scores[0]]
     for i in range(1,len(sampled_outputs.scores)):
         for j in range(len(out)):
@@ -139,7 +146,7 @@ def bleurt_loss(batch):
     sample_bleurt = torch.FloatTensor(sample_bleurt).to(accelerator.device)
     greedy_bleurt = torch.FloatTensor(greedy_bleurt).to(accelerator.device)
     
-    reward = (greedy_bleurt - sample_bleurt)*0.2
+    reward = (greedy_bleurt - sample_bleurt)
     
     return rl_loss(sampled_probs, reward)
 
@@ -162,16 +169,18 @@ def classifier_loss(batch):
             out[j] = torch.vstack((out[j],sampled_outputs.scores[i][j]))
     scores = torch.vstack(out).reshape(sampled_outputs.scores[0].shape[0], len(sampled_outputs.scores),-1)
     scores = torch.nn.functional.softmax(scores,dim=-1)
-    # print(scores.shape)
+
     sample_idx, sampled_probs = torch.zeros(scores.shape[0], scores.shape[1]).to(accelerator.device), torch.zeros(scores.shape[0], scores.shape[1]).to(accelerator.device)
     for ind, i in enumerate(scores):
         temp = torch.multinomial(i, 1)
         sampled_probs[ind] = i.gather(1, temp.type(torch.int64)).squeeze(1)
         sample_idx[ind] = temp.squeeze(1)
     sampled_texts = tokenizer.batch_decode(sampled_outputs.sequences, skip_special_tokens=True)
-    # print(sampled_texts)
+    
+    # Obtaining style classifier scores 
+    
     inps = clf_tok(sampled_texts , padding=True,truncation=True,max_length=30, return_tensors='pt').to(device)
-    # print(inps, inps['input_ids'].shape)
+    
     clf.to(device)
     clf.eval()
     clf_out = clf(**inps)
@@ -239,12 +248,12 @@ def bleu_loss(batch):
     sample_bleu = torch.FloatTensor(sample_bleu).to(accelerator.device)
     greedy_bleu = torch.FloatTensor(greedy_bleu).to(accelerator.device)
     
-    reward = (greedy_bleu - sample_bleu)*0.2
+    reward = (greedy_bleu - sample_bleu)
     
     return rl_loss(sampled_probs, reward)
     
 
-path = f'/home/hv2237/GYAFC_Corpus/{args.domain}'
+path = f'{args.data}'
 data = {}
 for split in ['train']:
     data[split] = []

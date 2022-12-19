@@ -22,13 +22,14 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="Huggingface model to be used", required=True)
-parser.add_argument("--domain", help="E&R or F&M Domain to train on", required=True)
+parser.add_argument("--data", help="Path to E&R or F&M datasets", required=True)
+parser.add_argument("--classifier_model", help="path to pretrained classifier model")
 
 max_length = 30
 bleurt = evaluate.load('bleurt', module_type="metric", checkpoint='bleurt-tiny-128')
 metric_bleu = evaluate.load('bleu')
-clf = AutoModelForSequenceClassification.from_pretrained('style-classifier/checkpoint-1000', num_labels=2)
-clf_tok = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+clf = AutoModelForSequenceClassification.from_pretrained(args.classifier_model, num_labels=2)
+clf_tok = AutoTokenizer.from_pretrained(args.classifier_model)
 smooth = SmoothingFunction()
 nltk.download('punkt')
 
@@ -134,7 +135,7 @@ def bleurt_loss(batch):
     
     return rl_loss(sampled_probs, reward)
 
-
+# START: taken from https://github.com/issacqzh/IRL_Table2Text/blob/main/Irl.py
 class Irl:
 
     def __init__(self,weights,size,learning_rate):
@@ -157,20 +158,23 @@ class Irl:
 
         relax_weights = [False]*len(self.weights)
 
+        # Gradient computed using difference between mean reward on reference - mean reward on sampled candidates
         for i in range(len(self.weights)):
             ref_part = np.mean(ref_rewards[i])
-            cand_part = np.sum(np.multiply(importance_weights,cand_rewards[i]))/np.sum(importance_weights)
+            cand_part = np.sum(np.multiply(importance_weights,cand_rewards[i]))/np.sum(importance_weights) 
             delta_weight = self.learning_rate*(ref_part-cand_part)
             if delta_weight < 0.00001:
                 relax_weights[i] = True
             print(ref_part,cand_part,np.mean(cand_rewards[i]))
             self.weights[i] += delta_weight
 
+        # Normalise new weights
         weights_sum = np.sum(self.weights)
         for i in range(len(self.weights)):
             self.normalized_weights[i] = self.weights[i]/weights_sum
 
         return relax_weights
+# END 
 
 def classifier_loss(batch):
     sampled_outputs = model.generate(
@@ -189,16 +193,15 @@ def classifier_loss(batch):
             out[j] = torch.vstack((out[j],sampled_outputs.scores[i][j]))
     scores = torch.vstack(out).reshape(sampled_outputs.scores[0].shape[0], len(sampled_outputs.scores),-1)
     scores = torch.nn.functional.softmax(scores,dim=-1)
-    # print(scores.shape)
+
     sample_idx, sampled_probs = torch.zeros(scores.shape[0], scores.shape[1]).to(accelerator.device), torch.zeros(scores.shape[0], scores.shape[1]).to(accelerator.device)
     for ind, i in enumerate(scores):
         temp = torch.multinomial(i, 1)
         sampled_probs[ind] = i.gather(1, temp.type(torch.int64)).squeeze(1)
         sample_idx[ind] = temp.squeeze(1)
     sampled_texts = tokenizer.batch_decode(sampled_outputs.sequences, skip_special_tokens=True)
-    # print(sampled_texts)
+
     inps = clf_tok(sampled_texts , padding=True,truncation=True,max_length=30, return_tensors='pt').to(device)
-    # print(inps, inps['input_ids'].shape)
     clf.to(device)
     clf.eval()
     clf_out = clf(**inps)
@@ -271,7 +274,7 @@ def bleu_loss(batch):
     return rl_loss(sampled_probs, reward)
     
 
-path = f'/home/hv2237/GYAFC_Corpus/{args.domain}'
+path = f'{args.data}'
 data = {}
 for split in ['train']:
     data[split] = []
@@ -355,11 +358,10 @@ lr_scheduler = transformers.get_polynomial_decay_schedule_with_warmup(optimizer,
 progress_bar = tqdm(range(num_training_steps))
 steps = 0
 best_bleu = 0.0
-weights = [0]*5
-irl_samples = 500
-irl = Irl(weights, config.irl_size, config.irl_lr)
+weights = [0]*3
+irl_samples = 500 # No of candidates to sample fromd data and policy
+irl = Irl(weights, 3, 1e-4) # IRL no of rewards and learning rate  
 
-    # Training
 model.train()
 
 # Supervised learning
@@ -479,7 +481,8 @@ for batch in train_dataloader:
     cand_probs = sampled_probs
         
 for epoch in irl_epochs:
-    for _ in range(2):
+    # IRL reward approximation
+    for _ in range(2): 
         ref_rewards = np.array(ref_rewards)
         cand_rewards = np.array(cand_rewards)
         cand_probs = np.array(cand_probs)
@@ -492,7 +495,7 @@ for epoch in irl_epochs:
         
         irl.update(sample_cand_rewards, sample_ref_rewards, sample_cand_probs)
     
-    # Training
+    # RL finetuning using approximated reward weights
     model.train()
     for batch in train_dataloader:
         outputs = model(**batch)

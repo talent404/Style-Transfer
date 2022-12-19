@@ -18,7 +18,12 @@ from tqdm.auto import tqdm
 import torch
 import numpy as np
 import evaluate
+import argparse
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", help="Huggingface model to be used", required=True)
+parser.add_argument("--data", help="Path to E&R or F&M datasets", required=True)
+parser.add_argument("--classifier_model", help="path to pretrained classifier model")
 metric_bleu = evaluate.load('bleu')
 metric_bleurt = evaluate.load('bleurt')
 
@@ -70,7 +75,7 @@ def postprocess(predictions, labels):
     return decoded_preds, decoded_labels
 
 
-path = '/home/hv2237/GYAFC_Corpus/Entertainment_Music'
+path = args.data
 data = {}
 for split in ['train']:
     data[split] = []
@@ -100,7 +105,7 @@ eval_dataset = load_dataset('json',data_files={
 })
 
 
-tokenizer = AutoTokenizer.from_pretrained('facebook/bart-base')
+tokenizer = AutoTokenizer.from_pretrained(args.model)
 
 tokenized_datasets = train_dataset.map(
     preprocess_function,
@@ -113,7 +118,7 @@ tokenized_datasets_eval = eval_dataset.map(
     remove_columns=eval_dataset["valid"].column_names,
 )
 
-model = AutoModelForSeq2SeqLM.from_pretrained('bart-finetuned/best-model').to('cuda:0')
+model = AutoModelForSeq2SeqLM.from_pretrained(args.model).to('cuda:0')
 
 data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
 
